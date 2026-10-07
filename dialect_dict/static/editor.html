@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<title>方言词典 · 审校后台</title>
+<style>
+  body{font-family:"Noto Sans CJK SC",sans-serif;max-width:1100px;margin:0 auto;padding:1em;color:#222}
+  fieldset{border:1px solid #bbc;border-radius:6px;margin:.6em 0}
+  legend{font-weight:bold;color:#446}
+  input,select,textarea{margin:.15em;padding:.3em}
+  button{padding:.3em .8em;margin:.15em}
+  .role-ed{color:#264}.role-ap{color:#624}
+  table{border-collapse:collapse;width:100%}
+  td,th{border:1px solid #ccd;padding:.3em .5em;font-size:.9em;text-align:left}
+  .warn{background:#fff0f0;border:1px solid #d99;border-radius:4px;padding:.4em;margin:.3em 0}
+  #log{font-size:.82em;color:#566;white-space:pre-wrap;background:#f6f6f2;padding:.5em;border-radius:4px;max-height:200px;overflow:auto}
+</style>
+</head>
+<body>
+<h1>审校后台 <small style="font-size:.5em">编辑与批准角色分离；所有修改先落草稿，发布后公开可见</small></h1>
+
+<fieldset><legend>登录（服务端逐端点校验角色）</legend>
+  <select id="who">
+    <option value="ed-token">editor1（编辑：可改草稿，不可发布/撤权）</option>
+    <option value="ap-token">approver1（审校：可发布、可撤权）</option>
+  </select>
+  <button onclick="login()">登录</button><span id="me"></span>
+</fieldset>
+
+<div id="app" style="display:none">
+<fieldset><legend>词条列表（工作草稿）</legend>
+  <button onclick="loadEntries()">刷新</button>
+  <input id="newhw" placeholder="新词目"> <input id="newctx" placeholder="语境说明（可选）" size="30">
+  <button onclick="createEntry()">新建词条</button>
+  <div id="elist"></div>
+</fieldset>
+
+<fieldset><legend>词条编辑</legend>
+  <div id="edetail">选择左侧词条</div>
+</fieldset>
+
+<fieldset><legend>审校操作（需 approver 角色）</legend>
+  <input id="pubnote" placeholder="发布说明"> <button onclick="publish()">发布新版本</button>
+  <input id="revokeid" placeholder="媒体 id"> <button onclick="revoke()">撤回音频授权</button>
+  <button onclick="loadTasks()">索引任务状态</button><div id="tasks"></div>
+</fieldset>
+</div>
+<div id="log"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let TOKEN = "";
+function log(m){ $("log").textContent += m + "\n"; }
+
+async function api(method, path, body){
+  const r = await fetch(path, {method, headers:{"Content-Type":"application/json","X-Token":TOKEN},
+    body: body ? JSON.stringify(body) : undefined});
+  const j = await r.json();
+  if (!r.ok) { log("✗ " + r.status + " " + (j.error||"")); throw new Error(j.error); }
+  return j;
+}
+async function login(){
+  TOKEN = $("who").value;
+  const me = await api("POST", "/api/login", {token: TOKEN});
+  $("me").innerHTML = ` 已登录：<b class="role-${me.role==='editor'?'ed':'ap'}">${me.username}（${me.role}）</b>`;
+  $("app").style.display = "block";
+  loadEntries();
+}
+async function loadEntries(){
+  const rows = await api("GET", "/api/draft/entries");
+  $("elist").innerHTML = "<table><tr><th>词目</th><th>状态</th><th>操作</th></tr>" + rows.map(e =>
+    `<tr><td>${esc(e.headword)}</td><td>${e.status}${e.merged_into?"→"+e.merged_into:""}</td>
+     <td><button onclick="loadEntry('${e.id}')">编辑</button></td></tr>`).join("") + "</table>";
+}
+async function createEntry(){
+  const r = await api("POST", "/api/entries", {headword: $("newhw").value, context_note: $("newctx").value});
+  log("✓ 新建词条 " + r.id); loadEntries();
+}
+async function loadEntry(id){
+  const d = await api("GET", "/api/draft/entry/" + id);
+  const e = d.entry;
+  let h = `<h3>${esc(e.headword)} <small>${e.id} · ${e.status}</small></h3>`;
+  h += `<div>词形：` + d.forms.map(f=>`<b>${esc(f.text)}</b>(${f.script})`).join("、") + `</div>`;
+  h += `<div>标音：` + d.prons.map(p=>`<b>${esc(p.value)}</b>[${p.scheme}${p.region?"/"+esc(p.region):""}]`).join("、") + `</div>`;
+  h += `<table><tr><th>#</th><th>义项</th><th>例句</th><th>操作</th></tr>`;
+  for (const s of d.senses){
+    const exs = d.examples.filter(x=>x.sense_id===s.id);
+    h += `<tr><td>${s.num}</td><td>${esc(s.definition)}</td>
+      <td>${exs.map(x=>esc(x.text)+(x.media_id?` 🎧${x.media_id}`:"")).join("<br>")}</td>
+      <td><button onclick="editSense('${s.id}')">改义项</button>
+          <button onclick="delSense('${s.id}')">删义项</button>
+          <button onclick="addEx('${s.id}')">加例句</button></td></tr>`;
+  }
+  h += `</table>
+    <div>
+      <input id="f_text" placeholder="词形" size="8"><select id="f_script"><option>simp</option><option>trad</option><option>variant</option></select>
+      <button onclick="addForm('${e.id}')">加词形</button>
+      <input id="p_val" placeholder="标音" size="10"><select id="p_scheme"><option>yd</option><option>ipa</option><option>plain</option></select>
+      <input id="p_region" placeholder="地区" size="6"><button onclick="addPron('${e.id}')">加标音</button>
+      <input id="s_def" placeholder="新义项" size="20"><input id="s_region" placeholder="地区" size="6">
+      <button onclick="addSense('${e.id}')">加义项</button>
+    </div>
+    <div>
+      <input id="m_into" placeholder="合并入词条id" size="16"><button onclick="merge('${e.id}')">合并本词条</button>
+      <input id="sp_senses" placeholder="拆分迁回义项id,逗号分隔" size="22"><button onclick="split('${e.id}')">拆分本词条</button>
+      <input id="r_dst" placeholder="关系目标id" size="16"><select id="r_type"><option>homophone</option><option>variant_char</option><option>regional_variant</option><option>see</option></select>
+      <button onclick="addRel('${e.id}')">加关系边</button>
+    </div>`;
+  $("edetail").innerHTML = h;
+  window._cur = e.id;
+}
+async function addForm(id){ await api("POST", `/api/entries/${id}/forms`, {text:$("f_text").value, script:$("f_script").value}); log("✓ 词形"); loadEntry(id); }
+async function addPron(id){ await api("POST", `/api/entries/${id}/prons`, {scheme:$("p_scheme").value, value:$("p_val").value, region:$("p_region").value}); log("✓ 标音"); loadEntry(id); }
+async function addSense(id){ const d=await api("GET","/api/draft/entry/"+id); await api("POST", `/api/entries/${id}/senses`, {num:d.senses.length+1, definition:$("s_def").value, region:$("s_region").value}); log("✓ 义项"); loadEntry(id); }
+async function editSense(sid){ const d=prompt("新义项定义："); if(d){ await api("POST", `/api/senses/${sid}/update`, {definition:d}); log("✓ 义项已改（新版本行，旧版仍被引用钉住）"); loadEntry(window._cur);} }
+async function delSense(sid){ if(confirm("软删除该义项？引用它的文章将看到存档+移除说明")){ await api("POST", `/api/senses/${sid}/delete`); log("✓ 义项已软删除"); loadEntry(window._cur);} }
+async function addEx(sid){ const t=prompt("例句："); if(t){ await api("POST", `/api/senses/${sid}/examples`, {text:t}); log("✓ 例句"); loadEntry(window._cur);} }
+async function merge(id){ await api("POST", `/api/entries/${id}/merge`, {into:$("m_into").value}); log("✓ 已合并（草稿）"); loadEntries(); }
+async function split(id){ const ids=$("sp_senses").value.split(",").map(s=>s.trim()).filter(Boolean); await api("POST", `/api/entries/${id}/split`, {sense_ids:ids}); log("✓ 已拆分（草稿）"); loadEntries(); }
+async function addRel(id){ await api("POST", `/api/entries/${id}/relations`, {dst:$("r_dst").value, type:$("r_type").value}); log("✓ 关系边"); }
+async function publish(){ const r = await api("POST", "/api/publish", {note:$("pubnote").value}); log("✓ 已发布 v" + r.version_id + "（索引任务已异步派发）"); }
+async function revoke(){ await api("POST", `/api/media/${$("revokeid").value}/revoke`, {}); log("✓ 已撤权，公开页立即只显示无音频文本"); }
+async function loadTasks(){ const t = await api("GET", "/api/tasks"); $("tasks").innerHTML = `发布 v${t.published} · 索引水位 v${t.indexed}<br>` + t.tasks.map(x=>`#${x.id} v${x.version_id} ${x.entry_id} ${x.status}`).join("<br>"); }
+</script>
+</body>
+</html>

@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<title>方言词典 · 公开检索</title>
+<style>
+  body{font-family:"Noto Sans CJK SC",sans-serif;max-width:960px;margin:0 auto;padding:1em;color:#222}
+  header{border-bottom:2px solid #446;margin-bottom:1em}
+  input[type=text]{padding:.4em;font-size:1em}
+  button{padding:.4em .9em}
+  mark{background:#ffe58a;padding:0 .1em}
+  .hit{border:1px solid #ccd;border-radius:6px;padding:.6em .8em;margin:.5em 0;cursor:pointer}
+  .hit:hover{background:#f6f8ff}
+  .explain{color:#677;font-size:.82em;margin-top:.3em}
+  .via{font-size:.75em;border:1px solid #99b;border-radius:3px;padding:0 .3em;color:#557;margin-right:.4em}
+  .ctxnote{background:#fff7e6;border:1px solid #e8c46a;border-radius:6px;padding:.6em .8em;margin:.6em 0}
+  .sense{border-left:3px solid #88a;padding-left:.7em;margin:.7em 0}
+  .example{background:#f7f7f4;border-radius:4px;padding:.4em .6em;margin:.3em 0}
+  .tag{font-size:.75em;background:#e8ecf7;border-radius:3px;padding:.1em .35em;margin-right:.3em}
+  .unconv{color:#a33;font-size:.85em}
+  .rel{font-size:.9em;color:#456}
+  .noaudio{color:#765;font-size:.85em}
+  #detail{margin-top:1em}
+  .meta{color:#888;font-size:.8em}
+  a{color:#346}
+</style>
+</head>
+<body>
+<header>
+  <h1>方言词典 <small style="font-size:.5em;color:#778">公开检索页（数据来自后端词库，非前端静态数据）</small></h1>
+</header>
+<div>
+  <input id="q" type=text size="30" placeholder="词目 / 标音 / 义项 / 例句（简繁均可）">
+  <button onclick="doSearch()">检索</button>
+  <button onclick="doCompare()">对比两种索引</button>
+  <span id="stat" class="meta"></span>
+</div>
+<div id="results"></div>
+<div id="detail"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => s.replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+function hi(text, spans){           // 可解释高亮：spans 为原文坐标
+  let out = "", cur = 0;
+  for (const [a,b] of spans){
+    out += esc(text.slice(cur, a)) + "<mark>" + esc(text.slice(a, b)) + "</mark>";
+    cur = b;
+  }
+  return out + esc(text.slice(cur));
+}
+
+async function doSearch(){
+  const q = $("q").value;
+  const r = await (await fetch("/api/search?q=" + encodeURIComponent(q))).json();
+  $("stat").textContent = r.version_id ? `索引版本 v${r.version_id}；规范键「${r.query_norm}」` : (r.note||"");
+  $("results").innerHTML = (r.hits||[]).map(h => `
+    <div class="hit" onclick="loadEntry('${h.entry_id}')">
+      <span class="via">${h.matched_via === "field" ? "原文精确" : h.matched_via === "both" ? "双路命中" : "规范键"}</span>
+      <b>${esc(h.headword)}</b> · ${h.field_label}：${hi(h.text, h.spans)}
+      <div class="explain">⌕ ${esc(h.explain)}</div>
+    </div>`).join("") || "<p>无结果</p>";
+  $("detail").innerHTML = "";
+}
+
+async function doCompare(){
+  const q = $("q").value;
+  const r = await (await fetch("/api/compare?q=" + encodeURIComponent(q))).json();
+  const grp = (t, arr) => `<h4>${t}（${arr.length}）</h4>` + arr.map(h =>
+    `<div class="hit">${h.field}：${esc(h.text)}<div class="explain">${esc(h.explain)}</div></div>`).join("");
+  $("results").innerHTML = `<h3>规范化检索键 vs 原文分字段索引：「${esc(q)}」→ 规范键「${esc(r.query_norm||"")}」</h3>`
+    + grp("两者皆命中", r.both||[]) + grp("仅规范键命中（依赖折叠）", r.only_norm||[])
+    + grp("仅原文索引命中", r.only_field||[]) + `<p class="meta">${esc(r.note||"")}</p>`;
+}
+
+async function loadEntry(id, v){
+  const url = "/api/entry/" + id + (v ? "?v=" + v : "");
+  const e = await (await fetch(url)).json();
+  if (e.error){ $("detail").innerHTML = "<p>" + esc(e.error) + "</p>"; return; }
+  let html = `<h2>${esc(e.headword)} <span class="meta">v${e.version_id} · id=${e.id}</span></h2>`;
+  if (e.status === "merged")
+    html += `<p class="ctxnote">本词条已合并入 <a href="#" onclick="loadEntry('${e.merged_into}');return false">${e.merged_into}</a>；此为版本 v${e.version_id} 的历史状态。</p>`;
+  if (e.context_note)
+    html += `<div class="ctxnote">⚠ <b>语境说明</b>：${esc(e.context_note)}</div>`;
+  if (e.forms.length)
+    html += `<p>词形：` + e.forms.map(f =>
+      `<span class="tag">${f.script}${f.is_standard ? "·标准" : ""}</span>${esc(f.text)}`).join("　") + `</p>`;
+  for (const p of e.prons){
+    html += `<p>标音 <span class="tag">${p.scheme}</span> <b>${esc(p.value)}</b>`
+      + (p.region ? ` <span class="tag">${esc(p.region)}</span>` : "")
+      + ` 切换方案：<select onchange="conv(this,'${p.id}')">
+           <option value="">原始记录（保留）</option>
+           <option value="ipa">IPA</option><option value="plain">简式罗马字</option>
+         </select> <span id="cv_${p.id}"></span></p>`;
+  }
+  for (const s of e.senses){
+    html += `<div class="sense" id="sense-${s.num}"><b>${s.num}.</b> `
+      + (s.pos ? `<span class="tag">${esc(s.pos)}</span>` : "")
+      + (s.region ? `<span class="tag">${esc(s.region)}</span>` : "")
+      + esc(s.definition);
+    for (const x of s.examples || []){
+      html += `<div class="example">例：${esc(x.text)}${x.translation ? " —— " + esc(x.translation) : ""}`;
+      if (x.media)
+        html += ` <audio controls src="${x.media.url}" style="vertical-align:middle"></audio>`;
+      else if (x.media_status === "revoked")
+        html += `<div class="noaudio">◼ 音频因授权撤回不可播放。无音频文本：${esc(x.transcript || "（暂无转写）")}</div>`;
+      else if (x.transcript)
+        html += `<div class="noaudio">◼ 暂无音频。文本记录：${esc(x.transcript)}</div>`;
+      html += `</div>`;
+    }
+    html += `</div>`;
+  }
+  const relNames = {homophone:"同音异义", variant_char:"异体字", regional_variant:"地区变体",
+                    split_from:"拆分自", merged_into:"合并入", see:"参见"};
+  for (const [t, arr] of Object.entries(e.relations))
+    html += `<p class="rel">${relNames[t] || t}：` + arr.map(r =>
+      `<a href="#" onclick="loadEntry('${r.id}');return false">${esc(r.headword)}</a>`).join("、") + `</p>`;
+  html += `<p class="meta">深链接：?v=${e.version_id}#sense-N 可定位到本版本的具体义项；旧版本链接内容不变。</p>`;
+  $("detail").innerHTML = html;
+}
+
+async function conv(sel, pid){
+  const t = sel.value; if (!t) { $("cv_"+pid).textContent = ""; return; }
+  const r = await (await fetch("/api/prons/" + pid + "/convert", {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({target:t})})).json();
+  $("cv_"+pid).innerHTML = r.status === "ok"
+    ? `→ <b>${esc(r.value)}</b> <span class="meta">（原始记录 ${esc(r.original)} 保留不变）</span>`
+    : `<span class="unconv">未转换：${esc(r.detail)}（不猜读，保留原始记录 ${esc(r.original)}）</span>`;
+}
+</script>
+</body>
+</html>
