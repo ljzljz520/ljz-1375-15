@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>方言词典 · 公开检索</title>
+<style>
+  :root{--ink:#2b2320;--accent:#7a3b2e;--line:#d8cdc4;--bg:#faf7f2;--mark:#ffe08a}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"Noto Serif SC",serif;background:var(--bg);color:var(--ink)}
+  header{background:var(--accent);color:#fff;padding:18px 24px}
+  header h1{margin:0;font-size:22px}
+  header a{color:#ffd9a0;font-size:13px}
+  .notice{background:#fff8e6;border:1px solid #e8d9a0;border-radius:8px;
+          padding:10px 14px;margin:14px 24px;font-size:13px;line-height:1.7}
+  main{max-width:960px;margin:0 auto;padding:0 24px 60px}
+  .searchbar{display:flex;gap:8px;margin:16px 0;flex-wrap:wrap}
+  input,select,button{font:inherit;padding:8px 10px}
+  input#q{flex:1;min-width:220px}
+  button{background:var(--accent);color:#fff;border:0;border-radius:6px;cursor:pointer}
+  button.ghost{background:#fff;color:var(--accent);border:1px solid var(--accent)}
+  .hit{border:1px solid var(--line);border-radius:8px;background:#fff;
+       padding:10px 14px;margin:10px 0}
+  .hit h3{margin:0 0 6px;cursor:pointer;color:var(--accent)}
+  .match{font-size:13px;margin:4px 0;color:#444}
+  .match .fld{display:inline-block;background:#eee;border-radius:4px;
+              padding:0 6px;margin-right:6px;font-size:12px}
+  mark{background:var(--mark);padding:0 1px}
+  .via{color:#6a8f5f;font-size:12px;margin-left:6px}
+  .card{border:1px solid var(--line);border-radius:10px;background:#fff;
+        padding:16px 20px;margin-top:14px}
+  .badge{display:inline-block;border-radius:4px;padding:1px 8px;font-size:12px;
+         margin-left:6px;background:#eef}
+  .badge.region{background:#e6f3e6}
+  .badge.unconverted{background:#fde2e2;color:#a33}
+  .usage{border-left:4px solid #c9a227;background:#fffbe8;padding:8px 12px;
+         margin:8px 0;font-size:14px}
+  .sense{border-top:1px dashed var(--line);padding:10px 0}
+  .ex{margin:6px 0 6px 18px;font-size:15px}
+  .ex .trans{color:#666;font-size:13px}
+  .audio-none{font-size:13px;color:#a33;background:#fdeeee;border-radius:6px;
+              padding:6px 10px;margin:4px 0 4px 18px}
+  .rel{font-size:14px;margin:4px 0}
+  .rel a{color:var(--accent);cursor:pointer}
+  .tabs button{margin-right:6px}
+  .tabs button.on{background:#4a2118}
+  .meta{color:#888;font-size:12px}
+  #compare{font-size:13px;background:#f4efe8;border-radius:8px;
+           padding:8px 12px;margin-bottom:8px;display:none}
+  .deeplink{font-size:12px;color:#888}
+</style>
+</head>
+<body>
+<header>
+  <h1>方言词典</h1>
+  <a href="/admin">进入审校后台 →</a>
+</header>
+<div class="notice" id="respectNotice">载入中……</div>
+<main>
+  <div class="searchbar">
+    <input id="q" placeholder="搜索词形 / 标音 / 义项 / 例句（支持简繁、标点、音标组合字符折叠）">
+    <select id="mode">
+      <option value="auto">自动</option>
+      <option value="raw">原文精确</option>
+      <option value="norm">规范化</option>
+    </select>
+    <button onclick="doSearch()">搜索</button>
+    <button class="ghost" onclick="doCompare()">对比两种索引</button>
+  </div>
+  <div id="compare"></div>
+  <div id="results"></div>
+  <div id="entry"></div>
+</main>
+<script>
+const $=s=>document.querySelector(s);
+const api=async(p)=>{const r=await fetch(p);const j=await r.json();
+  if(!r.ok)throw new Error(j.error||r.status);return j;};
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function hl(raw,spans){
+  spans=[...spans].sort((a,b)=>a[0]-b[0]);let out='',cur=0;
+  for(const[s,e]of spans){out+=esc(raw.slice(cur,s))+'<mark>'+esc(raw.slice(s,e))+'</mark>';cur=e;}
+  return out+esc(raw.slice(cur));
+}
+async function init(){
+  const m=await api('/api/meta');
+  $('#respectNotice').textContent='⚠ 尊重性语境说明：'+m.respect_notice;
+  const v=new URLSearchParams(location.search).get('v');
+  const id=new URLSearchParams(location.search).get('entry');
+  if(id)openEntry(id,v);
+}
+async function doSearch(){
+  const q=$('#q').value.trim();if(!q)return;
+  const r=await api('/api/public/search?q='+encodeURIComponent(q)+'&mode='+$('#mode').value);
+  $('#compare').style.display='none';$('#entry').innerHTML='';
+  $('#results').innerHTML=r.results.length?r.results.map(x=>`
+    <div class="hit">
+      <h3 onclick="openEntry('${x.entry_id}')">${esc(x.headword)}</h3>
+      ${x.matches.map(m=>`<div class="match"><span class="fld">${m.kind_label}${m.sub?'·'+m.sub:''}</span>
+        ${hl(m.raw,m.spans)}<span class="via">${esc(m.explanation)}</span></div>`).join('')}
+    </div>`).join(''):'<p>无结果。试试切换“规范化”模式。</p>';
+}
+async function doCompare(){
+  const q=$('#q').value.trim();if(!q)return;
+  const c=await api('/api/public/search/compare?q='+encodeURIComponent(q));
+  $('#compare').style.display='block';
+  $('#compare').innerHTML=`<b>索引键对比</b>：原文精确命中 ${c.raw.count} 条
+    （${c.raw.entries.join('、')||'无'}）；规范化命中 ${c.norm.count} 条
+    （${c.norm.entries.join('、')||'无'}）。
+    ${c.only_in_norm.length?'仅规范化命中：'+c.only_in_norm.join('、')+'。':''}
+    <br><span class="meta">${esc(c.note)}</span>`;
+}
+let CUR=null;
+async function openEntry(id,v){
+  const r=await api('/api/public/entries/'+id+(v?'?v='+v:''));
+  if(r.redirect){$('#entry').innerHTML=`<div class="card">该词条已合并：
+    <a onclick="openEntry('${r.redirect}')">${esc(r.message)}</a></div>`;return;}
+  CUR=r;const c=r.closure;
+  const vers=await api('/api/public/entries/'+id+'/versions');
+  const relTypes={'homophone':'同音异义','variant_char':'异体字','regional_variant':'地区变体','see_also':'参见'};
+  const rels={};for(const t of Object.keys(relTypes))rels[t]=[];
+  for(const rel of c.relations)rels[rel.type].push(rel);
+  $('#entry').innerHTML=`<div class="card">
+    <h2>${esc(c.entry.headword)}<span class="badge">v${r.version}</span></h2>
+    <div class="deeplink">固定深链接：?entry=${id}&v=${r.version}
+      ｜ 历史版本：${vers.versions.map(x=>`<a onclick="openEntry('${id}',${x})">v${x}</a>`).join(' ')}</div>
+    ${c.entry.note?`<p class="meta">${esc(c.entry.note)}</p>`:''}
+    <h4>标音</h4><div class="tabs" id="schemeTabs"></div><div id="prons"></div>
+    <h4>义项</h4>
+    ${c.senses.map(s=>`<div class="sense" id="sense-${s.id}">
+      <div><b>${esc(s.definition)}</b>${s.region?`<span class="badge region">${esc(s.region)}</span>`:''}</div>
+      ${s.usage_note?`<div class="usage">语境说明：${esc(s.usage_note)}</div>`:''}
+      ${s.examples.map(ex=>`<div class="ex">▸ ${esc(ex.text)}
+        <div class="trans">${esc(ex.translation||'')}${ex.source?'　——'+esc(ex.source.title):''}</div>
+        ${ex.audio&&ex.audio.url?`<audio controls src="${ex.audio.url}"></audio>
+          <div class="trans">文本：${esc(ex.audio.transcript||'')}</div>`
+        :ex.audio_revoked?`<div class="audio-none">音频已撤权，提供文本：${esc(ex.audio?ex.audio.transcript:'')}</div>`
+        :ex.audio?`<div class="trans">文本：${esc(ex.audio.transcript||'')}</div>`:''}
+      </div>`).join('')}
+    </div>`).join('')}
+    ${Object.keys(relTypes).map(t=>rels[t].length?`<h4>${relTypes[t]}</h4>`+rels[t].map(rel=>
+      `<div class="rel">· <a onclick="openEntry('${rel.other.id}')">${esc(rel.other.headword)}</a>
+       ${rel.direction==='in'?'（来条）':''} ${esc(rel.note||'')}</div>`).join(''):'').join('')}
+  </div>`;
+  renderSchemeTabs('jyutping');
+}
+function renderSchemeTabs(scheme){
+  const schemes=[['jyutping','粤拼'],['yale','耶鲁'],['ipa','IPA'],['pinyin','拼音']];
+  $('#schemeTabs').innerHTML=schemes.map(([k,l])=>
+    `<button class="${k===scheme?'on':''}" onclick="renderSchemeTabs('${k}')">${l}</button>`).join('');
+  const prons=CUR.closure.pronunciations;
+  const ok=prons.filter(p=>p.scheme===scheme&&p.status==='ok');
+  let html;
+  if(ok.length){
+    html=ok.map(p=>`<div>▸ <b>${esc(p.text)}</b>
+      <span class="badge">${p.origin==='recorded'?'原始记录':'无损转换'}</span></div>`).join('');
+  }else{
+    const rec=prons.filter(p=>p.origin==='recorded');
+    html=rec.length?rec.map(p=>`<div>▸ ${esc(p.text)}
+      <span class="badge unconverted">未转换·显示原始${esc(p.scheme)}记录</span></div>`).join('')
+      :'<div class="meta">暂无标音</div>';
+  }
+  $('#prons').innerHTML=html;
+}
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>方言词典 · 审校后台</title>
+<style>
+  body{margin:0;font-family:"Noto Serif SC",serif;background:#f4f1ec;color:#2b2320}
+  header{background:#33402f;color:#fff;padding:14px 22px;display:flex;gap:14px;align-items:center}
+  header h1{font-size:19px;margin:0;flex:1}
+  header a{color:#cfe0a8;font-size:13px}
+  main{max-width:1100px;margin:0 auto;padding:16px 22px 60px}
+  fieldset{border:1px solid #ccc;border-radius:8px;margin:12px 0;background:#fff}
+  legend{font-weight:bold;font-size:14px}
+  input,select,button,textarea{font:inherit;padding:6px 8px;margin:2px}
+  button{background:#33402f;color:#fff;border:0;border-radius:5px;cursor:pointer}
+  button.warn{background:#8a3324}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  td,th{border:1px solid #ddd;padding:4px 8px;text-align:left}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .pill{font-size:12px;border-radius:4px;padding:1px 7px;background:#e8e0d0}
+  .err{color:#a33;font-size:13px}
+  .ok{color:#4a7a3a;font-size:13px}
+  .mono{font-family:monospace;font-size:12px}
+  h3{margin:8px 0}
+</style>
+</head>
+<body>
+<header>
+  <h1>审校后台</h1>
+  <span id="who" style="font-size:13px"></span>
+  <select id="user" onchange="setUser()">
+    <option value="">未登录</option>
+    <option value="tok-editor">阿珍（编辑 editor）</option>
+    <option value="tok-approver">阿强（审校 approver）</option>
+  </select>
+  <a href="/">← 公开页</a>
+</header>
+<main>
+  <div id="msg"></div>
+  <div class="grid">
+    <div>
+      <fieldset><legend>词条列表（数据在服务端 SQLite，前端无静态词表）</legend>
+        <div class="row">
+          <input id="newHead" placeholder="新词条词形">
+          <input id="newNote" placeholder="备注">
+          <button onclick="createEntry()">新建</button>
+          <button onclick="loadEntries()">刷新</button>
+        </div>
+        <div id="entryList"></div>
+      </fieldset>
+      <fieldset><legend>合并 / 拆分</legend>
+        <div class="row">
+          <input id="mergeSrc" placeholder="源词条id" size="14">
+          <input id="mergeTgt" placeholder="目标词条id" size="14">
+          <button class="warn" onclick="doMerge()">合并 →</button>
+        </div>
+        <div class="row">
+          <input id="splitEntry" placeholder="从词条id" size="14">
+          <input id="splitSenses" placeholder="义项id(逗号分隔)" size="20">
+          <input id="splitRestore" placeholder="复活墓碑id(可空)" size="14">
+          <button class="warn" onclick="doSplit()">拆分</button>
+        </div>
+      </fieldset>
+      <fieldset><legend>索引任务（异步，可乱序完成）</legend>
+        <button onclick="loadTasks()">刷新</button>
+        <div id="tasks"></div>
+      </fieldset>
+      <fieldset><legend>审计日志（审校可见）</legend>
+        <button onclick="loadAudit()">刷新</button>
+        <div id="audit"></div>
+      </fieldset>
+    </div>
+    <div>
+      <fieldset><legend>词条编辑</legend>
+        <div id="detail">选择左侧词条。</div>
+      </fieldset>
+    </div>
+  </div>
+</main>
+<script>
+let TOKEN='',META=null,CUR=null;
+const $=s=>document.querySelector(s);
+function msg(t,ok){$('#msg').innerHTML=`<p class="${ok===false?'err':'ok'}">${t}</p>`;
+  setTimeout(()=>$('#msg').innerHTML='',4000);}
+async function api(p,opt={}){
+  opt.headers=Object.assign({'Content-Type':'application/json'},
+    TOKEN?{'Authorization':'Bearer '+TOKEN}:{});
+  if(opt.body&&typeof opt.body!=='string')opt.body=JSON.stringify(opt.body);
+  const r=await fetch(p,opt);const j=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(j.error||r.status);return j;}
+async function go(fn,...a){try{await fn(...a);}catch(e){msg(e.message,false);}}
+function setUser(){TOKEN=$('#user').value;$('#who').textContent=
+  TOKEN?('当前令牌：'+TOKEN):'';loadEntries();}
+async function init(){META=await (await fetch('/api/meta')).json();}
+async function loadEntries(){
+  if(!TOKEN)return;
+  go(async()=>{
+    const r=await api('/api/entries');
+    $('#entryList').innerHTML='<table><tr><th>词形</th><th>状态</th><th>v</th><th></th></tr>'+
+      r.entries.map(e=>`<tr><td>${e.headword}</td><td>${e.status}</td>
+        <td>${e.current_version}</td>
+        <td><button onclick="loadDetail('${e.id}')">编辑</button></td></tr>
+        ${e.status==='merged'?`<tr><td colspan=4 class="mono">↳ merged_into ${e.merged_into}</td></tr>`:''}`).join('')+'</table>';
+  });
+}
+async function createEntry(){go(async()=>{
+  const r=await api('/api/entries',{method:'POST',
+    body:{headword:$('#newHead').value,note:$('#newNote').value}});
+  msg('已创建 '+r.id);loadEntries();});}
+async function loadDetail(id){go(async()=>{
+  CUR=await api('/api/entries/'+id);renderDetail();});}
+function renderDetail(){
+  const d=CUR,e=d.entry;
+  const schemeOpts=META.schemes.map(s=>`<option>${s}</option>`).join('');
+  const relOpts=META.relation_types.map(t=>
+    `<option value="${t}">${META.relation_labels[t]}</option>`).join('');
+  const rgOpts='<option value="">（无地区）</option>'+META.regions.map(r=>
+    `<option value="${r.id}">${r.name}</option>`).join('');
+  const srcOpts='<option value="">（无来源）</option>'+META.sources.map(s=>
+    `<option value="${s.id}">${s.title}</option>`).join('');
+  $('#detail').innerHTML=`
+    <h3>${e.headword} <span class="pill">${e.status}</span>
+      <span class="pill mono">${e.id}</span><span class="pill">v${e.current_version}</span></h3>
+    <div class="row">
+      <input id="eh" value="${e.headword}"><input id="en" value="${e.note||''}" placeholder="备注">
+      <button onclick="go(saveHead)">保存词形</button>
+      <button onclick="go(flow,'submit')">提交审核</button>
+      <button onclick="go(flow,'approve')">批准</button>
+      <button onclick="go(flow,'publish')">发布</button>
+    </div>
+    <h4>标音</h4>
+    ${d.pronunciations.map(p=>`<div class="mono">· [${p.scheme}] ${p.text??'<i>（未转换）</i>'}
+      <span class="pill">${p.origin}</span><span class="pill">${p.status}</span></div>`).join('')}
+    <div class="row">
+      <select id="ps">${schemeOpts}</select><input id="pt" placeholder="标音文本">
+      <button onclick="go(addPron)">添加原始标音</button>
+      <select id="pcs">${schemeOpts}</select>
+      <button onclick="go(convertPron)">转换到该方案</button>
+    </div>
+    <h4>义项</h4>
+    ${d.senses.map(s=>`<div>
+      <b>#${s.idx}</b> <span class="mono">${s.id}</span> <span class="pill">${s.status}</span>
+      v${s.version}：${s.definition}
+      ${s.usage_note?`<div class="pill">语境：${s.usage_note}</div>`:''}
+      <div class="row">
+        <input id="sd-${s.id}" value="${s.definition.replace(/"/g,'&quot;')}" size="30">
+        <button onclick="go(editSense,'${s.id}')">改义项</button>
+        <button class="warn" onclick="go(delSense,'${s.id}')">删除</button>
+        <input id="xt-${s.id}" placeholder="新例句"><input id="xy-${s.id}" placeholder="译文" size="8">
+        <button onclick="go(addEx,'${s.id}')">加例句</button>
+      </div>
+      ${s.examples.map(x=>`<div class="mono">　▸ ${x.id} v${x.version} ${x.text}
+        ${x.audio?`<span class="pill">音频:${x.audio.status}</span>
+          <button class="warn" onclick="go(revokeAu,'${x.audio.id}')">撤权</button>`:
+          `<button onclick="go(attachAu,'${x.id}')">挂音频</button>`}
+        <input id="xe-${x.id}" value="${x.text.replace(/"/g,'&quot;')}" size="20">
+        <button onclick="go(editEx,'${x.id}')">改例句</button></div>`).join('')}
+    </div>`).join('')}
+    <div class="row">
+      <input id="nsd" placeholder="新义项定义" size="30">
+      <input id="nsn" placeholder="语境说明" size="20">
+      <select id="nsr">${rgOpts}</select>
+      <button onclick="go(addSense)">添加义项</button>
+    </div>
+    <h4>关系边</h4>
+    ${d.relations.map(r=>`<div class="mono">· ${r.type_label} ${r.direction==='out'?'→':'←'}
+      ${r.other?r.other.headword:''} <button class="warn" onclick="go(delRel,'${r.id}')">删</button></div>`).join('')}
+    <div class="row">
+      <select id="rt">${relOpts}</select>
+      <input id="rto" placeholder="目标词条id" size="16">
+      <input id="rn" placeholder="备注" size="10">
+      <button onclick="go(addRel)">添加关系</button>
+      <button onclick="go(cands)">同音候选</button>
+    </div>
+    <h4>版本轨迹</h4>
+    <div class="mono">${d.versions.map(v=>`v${v.version} ${v.op} @${v.created_at}`).join('<br>')}</div>`;
+}
+async function saveHead(){await api('/api/entries/'+CUR.entry.id,{method:'PUT',
+  body:{headword:$('#eh').value,note:$('#en').value}});msg('已保存');loadDetail(CUR.entry.id);}
+async function flow(op){await api('/api/entries/'+CUR.entry.id+'/'+op,{method:'POST'});
+  msg(op+' 完成');loadDetail(CUR.entry.id);loadEntries();}
+async function addPron(){await api('/api/entries/'+CUR.entry.id+'/pronunciations',
+  {method:'POST',body:{scheme:$('#ps').value,text:$('#pt').value}});
+  msg('已添加');loadDetail(CUR.entry.id);}
+async function convertPron(){const r=await api('/api/entries/'+CUR.entry.id+
+  '/pronunciations/convert',{method:'POST',body:{to_scheme:$('#pcs').value}});
+  msg(r.made.map(m=>m.status==='ok'?('✓ '+m.text):('✗ 未转换: 缺 '+m.missing.join(','))).join('；'));
+  loadDetail(CUR.entry.id);}
+async function addSense(){await api('/api/entries/'+CUR.entry.id+'/senses',
+  {method:'POST',body:{definition:$('#nsd').value,usage_note:$('#nsn').value,
+  region_id:$('#nsr').value||null}});msg('已添加');loadDetail(CUR.entry.id);}
+async function editSense(sid){await api('/api/senses/'+sid,{method:'PUT',
+  body:{definition:$('#sd-'+sid).value}});msg('已改');loadDetail(CUR.entry.id);}
+async function delSense(sid){const r=await api('/api/senses/'+sid,{method:'DELETE'});
+  msg('已删除（被引 '+r.cited_by+' 次）');loadDetail(CUR.entry.id);}
+async function addEx(sid){await api('/api/senses/'+sid+'/examples',{method:'POST',
+  body:{text:$('#xt-'+sid).value,translation:$('#xy-'+sid).value}});
+  msg('已添加');loadDetail(CUR.entry.id);}
+async function editEx(xid){await api('/api/examples/'+xid,{method:'PUT',
+  body:{text:$('#xe-'+xid).value}});msg('已改');loadDetail(CUR.entry.id);}
+async function attachAu(xid){await api('/api/examples/'+xid+'/audio',{method:'POST',
+  body:{url:'/static/audio/silence.wav',transcript:'（演示转写文本）'}});
+  msg('已挂音频');loadDetail(CUR.entry.id);}
+async function revokeAu(auid){await api('/api/audio/'+auid+'/revoke',{method:'POST',
+  body:{reason:'授权到期'}});msg('已撤权');loadDetail(CUR.entry.id);}
+async function addRel(){await api('/api/entries/'+CUR.entry.id+'/relations',
+  {method:'POST',body:{type:$('#rt').value,to_entry:$('#rto').value,note:$('#rn').value}});
+  msg('已添加');loadDetail(CUR.entry.id);}
+async function delRel(rid){await api('/api/relations/'+rid,{method:'DELETE'});
+  msg('已删');loadDetail(CUR.entry.id);}
+async function cands(){const r=await api('/api/entries/'+CUR.entry.id+
+  '/homophone-candidates');
+  msg(r.candidates.length?('同音候选：'+r.candidates.map(c=>c.headword+'('+c.entry_id+')').join('、')):'无候选');}
+async function doMerge(){go(async()=>{const r=await api('/api/entries/merge',
+  {method:'POST',body:{source_id:$('#mergeSrc').value,target_id:$('#mergeTgt').value}});
+  msg('已合并：'+r.merged+' → '+r.into);loadEntries();});}
+async function doSplit(){go(async()=>{const r=await api('/api/entries/'+
+  $('#splitEntry').value+'/split',{method:'POST',
+  body:{sense_ids:$('#splitSenses').value.split(',').map(s=>s.trim()).filter(Boolean),
+  restore_entry_id:$('#splitRestore').value||null}});
+  msg('已拆出 '+r.entry_id);loadEntries();});}
+async function loadTasks(){go(async()=>{const r=await api('/api/index/tasks');
+  $('#tasks').innerHTML='<table><tr><th>id</th><th>词条</th><th>v</th><th>状态</th><th>说明</th></tr>'+
+  r.tasks.map(t=>`<tr><td>${t.id}</td><td class="mono">${t.entry_id}</td><td>${t.version}</td>
+    <td>${t.status}</td><td>${t.detail||''}</td></tr>`).join('')+'</table>';});}
+async function loadAudit(){go(async()=>{const r=await api('/api/audit');
+  $('#audit').innerHTML='<table><tr><th>人</th><th>动作</th><th>对象</th><th>时间</th></tr>'+
+  r.log.map(a=>`<tr><td>${a.actor||''}</td><td>${a.action}</td>
+    <td class="mono">${a.target}</td><td>${a.at}</td></tr>`).join('')+'</table>';});}
+init();
+</script>
+</body>
+</html>
